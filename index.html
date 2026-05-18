@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Trader Drill">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Trader Drill</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --good: #3fb950; --bad: #f85149; --warn: #d29922; --field: #21262d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; background: var(--bg); color: var(--text);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    -webkit-text-size-adjust: 100%; overflow: hidden;
+  }
+  body {
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  #app { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+
+  .topbar { display: flex; justify-content: space-between; align-items: center; }
+  .timer { font-size: 28px; font-weight: 700; letter-spacing: 1px; }
+  .timer.urgent { color: var(--bad); }
+  .score { font-size: 14px; color: var(--muted); }
+  .score b { color: var(--text); }
+  .gear {
+    background: var(--field); border: 1px solid var(--border); color: var(--text);
+    width: 40px; height: 40px; border-radius: 10px; font-size: 18px;
+  }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 20px 16px; display: flex; flex-direction: column; gap: 16px;
+  }
+  .prompt-label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.5px; }
+  .eq { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 10px; }
+  .tok { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .tok .v { font-size: 26px; font-weight: 700; }
+  .tok .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .tok.target .v { color: var(--accent); }
+  .op { font-size: 22px; color: var(--muted); padding: 0 2px; }
+
+  .answer {
+    background: var(--field); border: 2px solid var(--border); border-radius: 12px;
+    text-align: center; font-size: 32px; font-weight: 700; padding: 13px 8px;
+    min-height: 60px; color: var(--accent); letter-spacing: 1px;
+  }
+  .answer.flash-good { border-color: var(--good); }
+  .answer.flash-bad  { border-color: var(--bad); }
+
+  .quote { display: flex; gap: 10px; }
+  .qbox {
+    flex: 1; background: var(--field); border: 2px solid var(--border); border-radius: 12px;
+    padding: 8px; text-align: center;
+  }
+  .qbox.active { border-color: var(--accent); }
+  .qbox .ql { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .qbox .qv { font-size: 30px; font-weight: 700; min-height: 38px; letter-spacing: 1px; }
+  .qbox.bid .qv { color: var(--good); }
+  .qbox.ask .qv { color: var(--bad); }
+  .qbox.flash-good { border-color: var(--good); }
+  .qbox.flash-bad  { border-color: var(--bad); }
+  .verdict { font-size: 13px; min-height: 18px; color: var(--muted); text-align: center; }
+  .verdict.good { color: var(--good); }
+  .verdict.bad  { color: var(--bad); }
+  .verdict.warn { color: var(--warn); }
+
+  .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-top: auto; }
+  .key {
+    background: var(--field); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 25px; font-weight: 600;
+    padding: 16px 0; border-radius: 12px; transition: transform .04s, background .1s;
+  }
+  .key:active { transform: scale(0.94); background: #2d333b; }
+  .key.act { color: var(--accent); }
+  .key.del { color: var(--bad); }
+  .key:disabled { opacity: 0.32; }
+
+  .overlay {
+    position: fixed; inset: 0; background: rgba(13,17,23,0.98);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 28px; text-align: center; z-index: 50; overflow-y: auto;
+  }
+  .overlay h1 { font-size: 25px; color: var(--accent); }
+  .overlay .big { font-size: 60px; font-weight: 800; }
+  .overlay .sub { color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .btn {
+    background: var(--accent); color: #0d1117; border: none; font-family: inherit;
+    font-size: 17px; font-weight: 700; padding: 15px 38px; border-radius: 12px;
+  }
+  .btn:active { opacity: 0.85; }
+  .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  .btn.sm { font-size: 14px; padding: 11px 22px; }
+  .stats { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; }
+  .stats div { display: flex; flex-direction: column; }
+  .stats .n { font-size: 28px; font-weight: 700; }
+  .stats .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .hidden { display: none !important; }
+  .rowbtns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+  .modeswitch { display: flex; border: 1px solid var(--border); border-radius: 11px; overflow: hidden; }
+  .modeswitch button {
+    background: var(--field); color: var(--muted); border: none; font-family: inherit;
+    font-size: 14px; font-weight: 600; padding: 12px 22px;
+  }
+  .modeswitch button.on { background: var(--accent); color: #0d1117; }
+
+  /* settings */
+  .panel-scroll { max-width: 460px; width: 100%; margin: 0 auto; }
+  .setgroup-label {
+    font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 1.5px;
+    text-align: left; margin: 14px 4px 4px;
+  }
+  .setrow {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 4px; border-bottom: 1px solid var(--border); gap: 12px;
+  }
+  .setrow .lbl { text-align: left; }
+  .setrow .lbl .t { font-size: 14px; }
+  .setrow .lbl .d { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; flex-shrink: 0; }
+  .seg button {
+    background: var(--field); color: var(--muted); border: none; font-family: inherit;
+    font-size: 12px; padding: 8px 11px;
+  }
+  .seg button.on { background: var(--accent); color: #0d1117; font-weight: 700; }
+  .numfield {
+    background: var(--field); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 14px; width: 66px; text-align: center;
+    padding: 8px 4px; border-radius: 9px;
+  }
+
+  /* tutorial */
+  .coach {
+    background: var(--panel); border: 1px solid var(--accent); border-radius: 12px;
+    padding: 14px; font-size: 13.5px; line-height: 1.55; color: var(--text);
+    max-width: 460px; margin: 0 auto; text-align: left;
+  }
+  .coach .step { font-size: 11px; color: var(--accent); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+  .coach b { color: var(--accent); }
+
+  /* history */
+  .histtabs { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 0 auto; }
+  .histtabs button {
+    background: var(--field); color: var(--muted); border: none; font-family: inherit;
+    font-size: 13px; font-weight: 600; padding: 10px 26px;
+  }
+  .histtabs button.on { background: var(--accent); color: #0d1117; }
+  .chartwrap {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 8px 6px; max-width: 460px; width: 100%; margin: 0 auto;
+  }
+  .chart-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin: 0 6px 4px; text-align: left; }
+  .histlist { max-width: 460px; width: 100%; margin: 0 auto; max-height: 38vh; overflow-y: auto; }
+  .histrow {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 10px 6px; border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .histrow .when { color: var(--muted); font-size: 12px; }
+  .histrow .main { font-weight: 700; }
+  .histrow .detail { color: var(--muted); font-size: 11px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 24px; }
+</style>
+</head>
+<body>
+
+<!-- ============ GAME ============ -->
+<div id="app" class="hidden">
+  <div class="topbar">
+    <div class="timer" id="timer">2:00</div>
+    <div class="score" id="scoreLine"></div>
+    <button class="gear" id="toSettings">&#9881;</button>
+  </div>
+
+  <div class="card">
+    <div class="prompt-label" id="promptLabel"></div>
+    <div class="eq" id="equation"></div>
+    <div class="answer" id="answer">&nbsp;</div>
+    <div class="quote hidden" id="quote">
+      <div class="qbox bid" id="bidBox"><div class="ql">Your Bid</div><div class="qv" id="bidVal">&nbsp;</div></div>
+      <div class="qbox ask" id="askBox"><div class="ql">Your Ask</div><div class="qv" id="askVal">&nbsp;</div></div>
+    </div>
+    <div class="verdict hidden" id="verdict">&nbsp;</div>
+  </div>
+
+  <!-- coach bubble appears here during the tutorial -->
+  <div class="coach hidden" id="coach"></div>
+
+  <div class="keypad" id="keypad"></div>
+</div>
+
+<!-- ============ START ============ -->
+<div class="overlay" id="startScreen">
+  <h1 id="startTitle">Trader Drill</h1>
+  <div class="modeswitch" id="modeSwitch">
+    <button data-v="parity">Parity</button>
+    <button data-v="mm">Market Making</button>
+  </div>
+  <div class="sub" id="startSub"></div>
+  <button class="btn" id="startBtn">Start</button>
+  <div class="rowbtns">
+    <button class="btn ghost sm" id="startTutorial">Walkthrough</button>
+    <button class="btn ghost sm" id="startHistory">History</button>
+    <button class="btn ghost sm" id="startSettings">Settings</button>
+  </div>
+</div>
+
+<!-- ============ END ============ -->
+<div class="overlay hidden" id="endScreen">
+  <h1>Time</h1>
+  <div class="big" id="finalScore">0</div>
+  <div class="stats" id="endStats"></div>
+  <div class="sub" id="endRate"></div>
+  <div class="rowbtns">
+    <button class="btn" id="againBtn">Again</button>
+    <button class="btn ghost sm" id="endHistory">History</button>
+    <button class="btn ghost sm" id="endSettings">Settings</button>
+  </div>
+</div>
+
+<!-- ============ SETTINGS ============ -->
+<div class="overlay hidden" id="settingsScreen">
+  <h1>Settings</h1>
+  <div class="panel-scroll">
+    <div class="setgroup-label">Shared</div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Session length</div><div class="d">seconds</div></div>
+      <input class="numfield" id="setDuration" type="number" inputmode="numeric" min="30" max="600">
+    </div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Strike spacing</div><div class="d">round / messier</div></div>
+      <div class="seg" id="segStrike">
+        <button data-v="round">Round</button><button data-v="fine">Fine</button>
+      </div>
+    </div>
+
+    <div class="setgroup-label">Parity mode</div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Unknown</div><div class="d">which leg you solve for</div></div>
+      <div class="seg" id="segUnknown">
+        <button data-v="random">Rnd</button><button data-v="C">Call</button>
+        <button data-v="P">Put</button><button data-v="S">Stock</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Discounting</div><div class="d">C&minus;P = S &minus; K&middot;e^(&minus;rT)</div></div>
+      <div class="seg" id="segDiscount">
+        <button data-v="off">Off</button><button data-v="on">On</button>
+      </div>
+    </div>
+
+    <div class="setgroup-label">Market making mode</div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Instrument</div><div class="d">what you quote on</div></div>
+      <div class="seg" id="segInstr">
+        <button data-v="parity">Parity</button><button data-v="abstract">Abstract</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Spread target</div><div class="d">max acceptable width</div></div>
+      <div class="seg" id="segWidth">
+        <button data-v="tight">Tight &le;2</button><button data-v="medium">Med &le;4</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Quote timer</div><div class="d">per-round vs session</div></div>
+      <div class="seg" id="segMMTimer">
+        <button data-v="round">Per-round</button><button data-v="session">Session</button>
+      </div>
+    </div>
+    <div class="setrow" id="rowRoundSecs">
+      <div class="lbl"><div class="t">Seconds per quote</div><div class="d">per-round timer only</div></div>
+      <input class="numfield" id="setRoundSecs" type="number" inputmode="numeric" min="3" max="30">
+    </div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Pick-off detection</div><div class="d">penalise quotes through fair</div></div>
+      <div class="seg" id="segPickoff">
+        <button data-v="on">On</button><button data-v="off">Off</button>
+      </div>
+    </div>
+
+    <div class="setgroup-label">Data</div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Score history</div><div class="d" id="histCount">0 sessions stored</div></div>
+      <div class="rowbtns" style="justify-content:flex-end">
+        <button class="btn ghost sm" id="exportBtn">Export</button>
+        <button class="btn ghost sm" id="clearBtn">Clear</button>
+      </div>
+    </div>
+  </div>
+  <button class="btn" id="settingsDone">Done</button>
+</div>
+
+<!-- ============ HISTORY ============ -->
+<div class="overlay hidden" id="historyScreen">
+  <h1>History</h1>
+  <div class="histtabs" id="histTabs">
+    <button data-v="parity">Parity</button>
+    <button data-v="mm">Market Making</button>
+  </div>
+  <div class="chartwrap" id="chartWrap">
+    <div class="chart-title" id="chartTitle"></div>
+    <canvas id="histChart" width="440" height="160" style="width:100%;height:160px"></canvas>
+  </div>
+  <div class="histlist" id="histList"></div>
+  <button class="btn" id="historyDone">Done</button>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   TRADER DRILL — parity + market-making drill, tutorial,
+   persistent per-mode score history with trend charts.
+   Single-file logic; manifest + service worker make it an
+   installable PWA when served over http(s).
+   ============================================================ */
+
+/* ---- service worker registration (no-op from file://) ---- */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {/* file:// — ignored */});
+  });
+}
+
+/* ---- persisted settings ---- */
+const DEFAULTS = {
+  mode: "parity", duration: 120, strike: "round",
+  unknown: "random", discount: "off",
+  instrument: "parity", width: "tight", mmTimer: "round", roundSecs: 8, pickoff: "on",
+  tutorialDone: false
+};
+let cfg;
+try { cfg = Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("traderDrillCfg") || "{}")); }
+catch (e) { cfg = Object.assign({}, DEFAULTS); }
+function saveCfg() { try { localStorage.setItem("traderDrillCfg", JSON.stringify(cfg)); } catch (e) {} }
+
+/* ---- persisted history ----
+   Array of { ts, mode, ...modeStats }. "Keep forever" with a hard
+   safety cap so a full localStorage never silently drops a save. */
+const HIST_KEY = "traderDrillHist";
+const HIST_CAP = 800;
+let history;
+try { history = JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); }
+catch (e) { history = []; }
+if (!Array.isArray(history)) history = [];
+
+function saveHistory() {
+  if (history.length > HIST_CAP) history = history.slice(history.length - HIST_CAP);
+  try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); }
+  catch (e) {
+    // storage full: trim aggressively and retry once
+    history = history.slice(Math.floor(history.length / 2));
+    try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch (e2) {}
+  }
+}
+function recordSession(rec) {
+  rec.ts = Date.now();
+  history.push(rec);
+  saveHistory();
+}
+
+/* ---- helpers ---- */
+const $ = id => document.getElementById(id);
+const randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+function fmt(x) { return (Math.round(x * 100) / 100).toString(); }
+
+/* ---- session state ---- */
+let round = null;
+let entry = "";
+let mmStage = "bid";
+let mmBid = null, mmAsk = null;
+let endTime = 0, tickHandle = null, running = false;
+let roundDeadline = 0;
+let solved = 0, attempts = 0, streak = 0, bestStreak = 0;
+let mmScoreSum = 0, mmPickoffs = 0, mmMissed = 0;
+
+/* ---- tutorial state ---- */
+let tutorial = false;     // is a guided walkthrough in progress
+let tutStep = 0;          // index into TUT_SCRIPT
+
+const KEY_NAME = { C: "Call", P: "Put", S: "Stock", K: "Strike" };
+const WIDTH_TARGET = { tight: 2, medium: 4 };
+
+/* ============================================================
+   PARITY ENGINE  (shared)
+   ============================================================ */
+function buildParityRow(forceZeroRate) {
+  let df = 1;
+  if (!forceZeroRate && cfg.mode === "parity" && cfg.discount === "on") {
+    const r = randInt(1, 5) / 100;
+    const T = pick([0.25, 0.5, 0.75, 1]);
+    df = Math.round(Math.exp(-r * T) * 1000) / 1000;
+  }
+  const S = randInt(50, 200);
+  let K;
+  if (cfg.strike === "round") {
+    const base = Math.round(S / 5) * 5;
+    K = Math.max(20, base + pick([-15, -10, -5, 0, 5, 10, 15]));
+  } else {
+    K = Math.max(20, S + randInt(-18, 18));
+  }
+  const spread = S - K * df;
+  const floorP = Math.max(0, Math.ceil(-spread));
+  const P = floorP + randInt(1, 25);
+  const C = +(P + spread).toFixed(2);
+  return { S, K, C, P, df };
+}
+
+/* ============================================================
+   PARITY MODE
+   ============================================================ */
+function buildParityRound() {
+  const row = buildParityRow();
+  let target = cfg.unknown;
+  if (target === "random") target = pick(["C", "P", "S"]);
+  return Object.assign(row, { target });
+}
+
+function renderParityRow(r, targetKey) {
+  $("promptLabel").textContent = "Solve for the " + KEY_NAME[targetKey].toLowerCase();
+  const legs = [
+    { k: "C", label: "Call",   val: r.C },
+    { k: "P", label: "Put",    val: r.P },
+    { k: "S", label: "Stock",  val: r.S },
+    { k: "K", label: "Strike", val: r.K }
+  ];
+  const eq = $("equation");
+  eq.innerHTML = "";
+  legs.forEach((leg, i) => {
+    const isT = leg.k === targetKey;
+    const t = document.createElement("div");
+    t.className = "tok" + (isT ? " target" : "");
+    t.innerHTML = '<span class="v">' + (isT ? "?" : fmt(leg.val)) +
+                  '</span><span class="k">' + leg.label + '</span>';
+    eq.appendChild(t);
+    if (i < legs.length - 1) {
+      const op = document.createElement("span");
+      op.className = "op"; op.textContent = "·";
+      eq.appendChild(op);
+    }
+  });
+  if (r.df !== 1) {
+    const op = document.createElement("span");
+    op.className = "op"; op.textContent = "DF";
+    eq.appendChild(op);
+    const t = document.createElement("div");
+    t.className = "tok";
+    t.innerHTML = '<span class="v">' + r.df + '</span><span class="k">e^(-rT)</span>';
+    eq.appendChild(t);
+  }
+}
+
+function renderParity() {
+  renderParityRow(round, round.target);
+  entry = "";
+  $("answer").textContent = "\u00A0";
+  $("answer").className = "answer";
+}
+
+function checkParity() {
+  if (entry === "" || entry === "-" || entry === ".") return;
+  if (tutorial) return checkTutorialParity();
+  attempts++;
+  const guess = parseFloat(entry);
+  const correct = Math.round(round[round.target] * 100) / 100;
+  const ok = Math.abs(guess - correct) < 0.011;
+  const box = $("answer");
+  if (ok) {
+    solved++; streak++; bestStreak = Math.max(bestStreak, streak);
+    box.className = "answer flash-good";
+    if (navigator.vibrate) navigator.vibrate(15);
+  } else {
+    streak = 0;
+    box.className = "answer flash-bad";
+    box.textContent = correct;
+    if (navigator.vibrate) navigator.vibrate([0, 40, 30, 40]);
+  }
+  refreshScore();
+  lockThenNext(ok ? 90 : 650);
+}
+
+/* ============================================================
+   MARKET-MAKING MODE
+   ============================================================ */
+function buildMMRound() {
+  if (cfg.instrument === "parity") {
+    const row = buildParityRow(true);          // MM parity instruments stay zero-rate
+    const target = pick(["C", "P", "S"]);
+    const fair = Math.round(row[target] * 100) / 100;
+    return { kind: "parity", row, target, fair };
+  } else {
+    const fair = Math.random() < 0.4
+      ? randInt(40, 400) + pick([0.5, 0.25, 0.75])
+      : randInt(40, 400);
+    return { kind: "abstract", fair };
+  }
+}
+
+function renderMM() {
+  const r = round;
+  if (r.kind === "parity") {
+    renderParityRow(r.row, r.target);
+    $("promptLabel").textContent = "Quote a market on the " + KEY_NAME[r.target].toLowerCase();
+  } else {
+    $("promptLabel").textContent = "Quote a two-sided market";
+    const eq = $("equation");
+    eq.innerHTML = "";
+    const t = document.createElement("div");
+    t.className = "tok target";
+    t.innerHTML = '<span class="v">' + fmt(r.fair) + '</span><span class="k">Fair Value</span>';
+    eq.appendChild(t);
+  }
+  entry = ""; mmBid = null; mmAsk = null; mmStage = "bid";
+  $("bidVal").textContent = "\u00A0";
+  $("askVal").textContent = "\u00A0";
+  $("bidBox").className = "qbox bid active";
+  $("askBox").className = "qbox ask";
+  $("verdict").textContent = "\u00A0";
+  $("verdict").className = "verdict";
+  if (!tutorial && cfg.mmTimer === "round") roundDeadline = Date.now() + cfg.roundSecs * 1000;
+}
+
+function mmEnter() {
+  if (entry === "" || entry === "." || entry === "-") return;
+  const v = parseFloat(entry);
+  if (mmStage === "bid") {
+    mmBid = v;
+    $("bidVal").textContent = fmt(v);
+    mmStage = "ask"; entry = "";
+    $("bidBox").className = "qbox bid";
+    $("askBox").className = "qbox ask active";
+    $("askVal").textContent = "\u00A0";
+    if (tutorial) tutorialAfterBid();
+  } else {
+    mmAsk = v;
+    $("askVal").textContent = fmt(v);
+    if (tutorial) return checkTutorialQuote();
+    scoreMM();
+  }
+}
+
+/* MM scoring — see header comment for the formula rationale. */
+function evalQuote(B, A, F, widthCfg, pickoffOn) {
+  const width = A - B, mid = (A + B) / 2, target = WIDTH_TARGET[widthCfg];
+  const pickedBid = B > F + 1e-9, pickedAsk = A < F - 1e-9, inverted = width <= 0;
+  if (inverted) return { score: 0, why: "inverted" };
+  if (pickoffOn && (pickedBid || pickedAsk)) {
+    return { score: 0, why: "pickoff", side: pickedBid ? "bid" : "ask",
+             edge: pickedBid ? (B - F) : (F - A) };
+  }
+  const w = clamp(100 * (1 - (width - target) / (2 * target)), 0, 100);
+  const c = clamp(100 * (1 - Math.abs(mid - F) / target), 0, 100);
+  return { score: Math.round(0.5 * w + 0.5 * c), width, w, c };
+}
+
+function scoreMM() {
+  attempts++;
+  const F = round.fair;
+  const res = evalQuote(mmBid, mmAsk, F, cfg.width, cfg.pickoff === "on");
+  let vClass, vText;
+  if (res.why === "inverted") {
+    vClass = "bad"; vText = "Inverted market — ask \u2264 bid";
+  } else if (res.why === "pickoff") {
+    mmPickoffs++;
+    vClass = "bad";
+    vText = "Picked off — " + res.side + " " + fmt(Math.abs(res.edge)) +
+            " through fair " + fmt(F);
+  } else if (res.score >= 85) {
+    solved++; streak++; bestStreak = Math.max(bestStreak, streak);
+    vClass = "good";
+    vText = "Score " + res.score + " · width " + fmt(res.width) + " · fair " + fmt(F);
+  } else {
+    streak = 0;
+    vClass = "warn";
+    vText = "Score " + res.score + " · " +
+            (res.width > WIDTH_TARGET[cfg.width] ? "too wide" : "off-centre") +
+            " · fair " + fmt(F);
+  }
+  mmScoreSum += res.score;
+  $("verdict").textContent = vText;
+  $("verdict").className = "verdict " + vClass;
+  const good = res.score >= 85;
+  $("bidBox").className = "qbox bid " + (good ? "flash-good" : "flash-bad");
+  $("askBox").className = "qbox ask " + (good ? "flash-good" : "flash-bad");
+  if (navigator.vibrate) navigator.vibrate(good ? 15 : [0, 40, 30, 40]);
+  refreshScore();
+  lockThenNext(good ? 520 : 1000);
+}
+
+function mmTimeout() {
+  attempts++; mmMissed++; streak = 0;
+  $("verdict").textContent = "Missed — no market up. Fair was " + fmt(round.fair);
+  $("verdict").className = "verdict bad";
+  if (navigator.vibrate) navigator.vibrate([0, 60, 40, 60]);
+  refreshScore();
+  lockThenNext(1000);
+}
+
+/* ============================================================
+   ROUND DISPATCH
+   ============================================================ */
+function nextRound() {
+  if (cfg.mode === "parity") { round = buildParityRound(); renderParity(); }
+  else { round = buildMMRound(); renderMM(); }
+}
+
+function lockThenNext(delayMs) {
+  running = false;
+  roundDeadline = 0;
+  setTimeout(() => {
+    if (endTime && Date.now() >= endTime) { endSession(); return; }
+    running = true;
+    nextRound();
+  }, delayMs);
+}
+
+function submit() {
+  if (!running) return;
+  if (cfg.mode === "parity") checkParity();
+  else mmEnter();
+}
+
+/* ============================================================
+   KEYPAD
+   ============================================================ */
+function buildKeypad() {
+  const kp = $("keypad");
+  kp.innerHTML = "";
+  ["1","2","3","4","5","6","7","8","9","-","0","."].forEach(ch => {
+    const b = document.createElement("button");
+    b.className = "key"; b.textContent = ch;
+    b.addEventListener("click", () => pressDigit(ch));
+    kp.appendChild(b);
+  });
+  const del = document.createElement("button");
+  del.className = "key del"; del.textContent = "\u232B";
+  del.addEventListener("click", backspace);
+  const ent = document.createElement("button");
+  ent.className = "key act"; ent.textContent = "\u23CE";
+  ent.style.gridColumn = "span 2";
+  ent.addEventListener("click", submit);
+  kp.appendChild(del);
+  kp.appendChild(ent);
+}
+
+function pressDigit(ch) {
+  if (!running) return;
+  if (ch === "-") {
+    entry = entry.startsWith("-") ? entry.slice(1) : "-" + entry;
+  } else if (ch === ".") {
+    if (!entry.includes(".")) entry += (entry === "" || entry === "-") ? "0." : ".";
+  } else {
+    if (entry.replace(/[-.]/g, "").length < 7) entry += ch;
+  }
+  refreshEntry();
+}
+function backspace() {
+  if (!running) return;
+  entry = entry.slice(0, -1);
+  refreshEntry();
+}
+function refreshEntry() {
+  if (cfg.mode === "parity") {
+    const a = $("answer");
+    a.className = "answer";
+    a.textContent = entry === "" ? "\u00A0" : entry;
+  } else {
+    const el = mmStage === "bid" ? $("bidVal") : $("askVal");
+    el.textContent = entry === "" ? "\u00A0" : entry;
+  }
+}
+document.addEventListener("keydown", e => {
+  if (!running) return;
+  if (e.key >= "0" && e.key <= "9") pressDigit(e.key);
+  else if (e.key === "." || e.key === "-") pressDigit(e.key);
+  else if (e.key === "Backspace") backspace();
+  else if (e.key === "Enter") submit();
+});
+
+/* ============================================================
+   TIMER / SESSION LIFECYCLE
+   ============================================================ */
+function fmtClock(s) {
+  s = Math.max(0, Math.ceil(s));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function tick() {
+  const now = Date.now();
+  const left = (endTime - now) / 1000;
+  $("timer").textContent = fmtClock(left);
+  $("timer").classList.toggle("urgent", left <= 10);
+  if (running && cfg.mode === "mm" && cfg.mmTimer === "round" && roundDeadline) {
+    if (now >= roundDeadline) { roundDeadline = 0; mmTimeout(); }
+  }
+  if (left <= 0) { endSession(); return; }
+  tickHandle = requestAnimationFrame(tick);
+}
+function refreshScore() {
+  if (cfg.mode === "parity") {
+    $("scoreLine").innerHTML = "streak <b>" + streak + "</b> &nbsp;·&nbsp; <b>" + solved + "</b> solved";
+  } else {
+    const avg = attempts ? Math.round(mmScoreSum / attempts) : 0;
+    $("scoreLine").innerHTML = "avg <b>" + avg + "</b> &nbsp;·&nbsp; streak <b>" + streak + "</b>";
+  }
+}
+
+function showGameUI() {
+  const isMM = cfg.mode === "mm";
+  $("answer").classList.toggle("hidden", isMM);
+  $("quote").classList.toggle("hidden", !isMM);
+  $("verdict").classList.toggle("hidden", !isMM);
+  ["startScreen","endScreen","settingsScreen","historyScreen"].forEach(s => $(s).classList.add("hidden"));
+  $("app").classList.remove("hidden");
+}
+
+function startSession() {
+  tutorial = false;
+  $("coach").classList.add("hidden");
+  solved = attempts = streak = bestStreak = 0;
+  mmScoreSum = mmPickoffs = mmMissed = 0;
+  running = true;
+  endTime = Date.now() + cfg.duration * 1000;
+  showGameUI();
+  refreshScore();
+  nextRound();
+  cancelAnimationFrame(tickHandle);
+  tick();
+}
+
+function endSession() {
+  running = false;
+  cancelAnimationFrame(tickHandle);
+  const stats = $("endStats");
+  if (cfg.mode === "parity") {
+    const acc = attempts ? Math.round(100 * solved / attempts) : 0;
+    const rate = +(solved / (cfg.duration / 60)).toFixed(1);
+    $("finalScore").textContent = solved;
+    stats.innerHTML = statBlock(solved, "solved") + statBlock(acc + "%", "accuracy") +
+                      statBlock(bestStreak, "best streak");
+    $("endRate").textContent = rate + " solved / min";
+    recordSession({ mode: "parity", solved, attempts, accuracy: acc,
+                    bestStreak, rate, duration: cfg.duration });
+  } else {
+    const avg = attempts ? Math.round(mmScoreSum / attempts) : 0;
+    $("finalScore").textContent = avg;
+    stats.innerHTML = statBlock(attempts, "quotes") + statBlock(mmPickoffs, "picked off") +
+                      statBlock(bestStreak, "best streak");
+    const extra = cfg.mmTimer === "round" ? (" · " + mmMissed + " missed") : "";
+    $("endRate").textContent = "avg score / quote" + extra;
+    recordSession({ mode: "mm", avgScore: avg, quotes: attempts, pickoffs: mmPickoffs,
+                    missed: mmMissed, bestStreak, instrument: cfg.instrument,
+                    width: cfg.width, duration: cfg.duration });
+  }
+  $("app").classList.add("hidden");
+  $("endScreen").classList.remove("hidden");
+}
+function statBlock(n, l) {
+  return '<div><span class="n">' + n + '</span><span class="l">' + l + '</span></div>';
+}
+
+/* ============================================================
+   TUTORIAL  —  guided once-only walkthrough.
+   Parity step kept brief (one solve, sign-flip hint); the MM
+   step does the real teaching: why a quote scores what it does.
+   ============================================================ */
+const TUT_SCRIPT = [
+  { phase: "parity-intro",
+    text: '<div class="step">Walkthrough 1 / 4</div>' +
+          'Parity mode. Zero-rate identity: <b>C &minus; P = S &minus; K</b>. ' +
+          'Three legs are shown, one is blank. Here you solve for the <b>call</b>. ' +
+          'Rearrange: <b>C = S &minus; K + P</b>. ' +
+          'Compute <b>S &minus; K</b> first, then add the put. Type it and hit return.' },
+  { phase: "parity-done",
+    text: '<div class="step">Walkthrough 2 / 4</div>' +
+          'That is the whole parity loop. The drill randomises which leg is hidden — ' +
+          'solving for the <b>put</b> flips the signs (<b>P = K &minus; S + C</b>), ' +
+          'and that sign-flip under time pressure is what it trains. Tap Next.' },
+  { phase: "mm-intro",
+    text: '<div class="step">Walkthrough 3 / 4</div>' +
+          'Market making. You are shown a fair value and must quote a two-sided ' +
+          'market: a <b>bid</b> (where you buy) below it and an <b>ask</b> (where you sell) above. ' +
+          'Fair here is <b>100</b>. Enter a bid — try <b>99</b> — and hit return.' },
+  { phase: "mm-ask",
+    text: '<div class="step">Walkthrough 3 / 4</div>' +
+          'Now the ask. It must sit <b>above</b> fair, or you would be selling too cheap — ' +
+          'an instant zero (a "pick-off"). Keep it tight: try <b>101</b>, hit return.' },
+  { phase: "mm-done",
+    text: '<div class="step">Walkthrough 4 / 4</div>' +
+          'Each quote scores 0&ndash;100: half on <b>width</b> (tighter is better, ' +
+          'up to the target), half on <b>centre</b> (your mid vs fair). ' +
+          'A quote on the wrong side of fair scores zero outright. ' +
+          'That tension — tight enough to score, not so tight you get picked off — ' +
+          'is the drill. You are set. Tap Finish.' }
+];
+
+function showCoach(html) {
+  const c = $("coach");
+  c.innerHTML = html;
+  c.classList.remove("hidden");
+}
+function setKeypadEnabled(on) {
+  $("keypad").querySelectorAll(".key").forEach(k => { k.disabled = !on; });
+}
+
+// a coach bubble with a Next/Finish button for non-input steps
+function coachWithButton(html, label, fn) {
+  showCoach(html + '<div style="margin-top:12px;text-align:center">' +
+            '<button class="btn sm" id="coachNext">' + label + '</button></div>');
+  $("coachNext").addEventListener("click", fn);
+}
+
+function startTutorial() {
+  tutorial = true; tutStep = 0;
+  running = false;
+  cancelAnimationFrame(tickHandle);
+  // tutorial always runs parity-first regardless of saved mode
+  $("answer").classList.remove("hidden");
+  $("quote").classList.add("hidden");
+  $("verdict").classList.add("hidden");
+  ["startScreen","endScreen","settingsScreen","historyScreen"].forEach(s => $(s).classList.add("hidden"));
+  $("app").classList.remove("hidden");
+  $("timer").textContent = "—";
+  $("scoreLine").innerHTML = "<b>walkthrough</b>";
+  // fixed parity round: S=120 K=110 P=8  ->  C = 120-110+8 = 18
+  round = { S: 120, K: 110, C: 18, P: 8, df: 1, target: "C" };
+  renderParity();
+  running = true;
+  showCoach(TUT_SCRIPT[0].text);
+}
+
+function checkTutorialParity() {
+  const guess = parseFloat(entry);
+  const correct = 18;
+  const box = $("answer");
+  if (Math.abs(guess - correct) < 0.011) {
+    box.className = "answer flash-good";
+    if (navigator.vibrate) navigator.vibrate(15);
+    running = false;
+    setTimeout(() => {
+      coachWithButton(TUT_SCRIPT[1].text, "Next", tutorialToMM);
+    }, 250);
+  } else {
+    box.className = "answer flash-bad";
+    showCoach(TUT_SCRIPT[0].text +
+      '<div style="margin-top:8px;color:var(--warn)">Not quite — ' +
+      'S &minus; K = 120 &minus; 110 = 10, then + P (8) = <b>18</b>. Try again.</div>');
+    entry = "";
+    setTimeout(() => { box.className = "answer"; box.textContent = "\u00A0"; }, 600);
+  }
+}
+
+function tutorialToMM() {
+  // switch the visible widgets to MM
+  $("answer").classList.add("hidden");
+  $("quote").classList.remove("hidden");
+  $("verdict").classList.remove("hidden");
+  // fixed abstract instrument, fair = 100
+  round = { kind: "abstract", fair: 100 };
+  renderMM();
+  running = true;
+  showCoach(TUT_SCRIPT[2].text);
+}
+
+function tutorialAfterBid() {
+  // called once the bid is committed; coach the ask
+  showCoach(TUT_SCRIPT[3].text);
+}
+
+function checkTutorialQuote() {
+  const res = evalQuote(mmBid, mmAsk, 100, "tight", true);
+  const good = res.score >= 85 && !res.why;
+  $("bidBox").className = "qbox bid " + (good ? "flash-good" : "flash-bad");
+  $("askBox").className = "qbox ask " + (good ? "flash-good" : "flash-bad");
+  if (good) {
+    $("verdict").textContent = "Score " + res.score + " — clean two-sided market.";
+    $("verdict").className = "verdict good";
+    running = false;
+    setTimeout(() => {
+      coachWithButton(TUT_SCRIPT[4].text, "Finish", finishTutorial);
+    }, 250);
+  } else {
+    let msg;
+    if (res.why === "inverted") msg = "Ask must be above the bid — try bid 99, ask 101.";
+    else if (res.why === "pickoff")
+      msg = "That side is through fair (100) — you'd trade at a loss. Try bid 99, ask 101.";
+    else msg = "A bit wide or off-centre — tighten it. Try bid 99, ask 101.";
+    showCoach(TUT_SCRIPT[3].text +
+      '<div style="margin-top:8px;color:var(--warn)">' + msg + '</div>');
+    // reset the quote boxes to retry
+    setTimeout(() => {
+      mmStage = "bid"; mmBid = mmAsk = null; entry = "";
+      $("bidVal").textContent = "\u00A0"; $("askVal").textContent = "\u00A0";
+      $("bidBox").className = "qbox bid active";
+      $("askBox").className = "qbox ask";
+      $("verdict").textContent = "\u00A0"; $("verdict").className = "verdict";
+      showCoach(TUT_SCRIPT[2].text);
+    }, 800);
+  }
+}
+
+function finishTutorial() {
+  tutorial = false;
+  cfg.tutorialDone = true; saveCfg();
+  $("coach").classList.add("hidden");
+  $("app").classList.add("hidden");
+  $("startScreen").classList.remove("hidden");
+}
+
+/* ============================================================
+   HISTORY  +  TREND CHARTS
+   ============================================================ */
+let histTab = "parity";
+
+function openHistory() {
+  running = false;
+  cancelAnimationFrame(tickHandle);
+  ["app","startScreen","endScreen","settingsScreen"].forEach(s => $(s).classList.add("hidden"));
+  $("historyScreen").classList.remove("hidden");
+  paintHistTabs();
+  renderHistory();
+}
+
+function paintHistTabs() {
+  $("histTabs").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("on", b.dataset.v === histTab);
+  });
+}
+
+function renderHistory() {
+  const rows = history.filter(h => h.mode === histTab);
+  const list = $("histList");
+  list.innerHTML = "";
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty">No ' +
+      (histTab === "parity" ? "parity" : "market-making") +
+      ' sessions yet. Finish a session and it lands here.</div>';
+  }
+
+  // newest first in the list
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const h = rows[i];
+    const d = new Date(h.ts);
+    const when = d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+                 " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    const row = document.createElement("div");
+    row.className = "histrow";
+    if (histTab === "parity") {
+      row.innerHTML =
+        '<span><span class="main">' + h.solved + ' solved</span>' +
+        ' <span class="detail">· ' + h.accuracy + '% · streak ' + h.bestStreak + '</span></span>' +
+        '<span class="when">' + when + '</span>';
+    } else {
+      row.innerHTML =
+        '<span><span class="main">avg ' + h.avgScore + '</span>' +
+        ' <span class="detail">· ' + h.quotes + ' quotes · ' + h.pickoffs + ' picked off</span></span>' +
+        '<span class="when">' + when + '</span>';
+    }
+    list.appendChild(row);
+  }
+
+  drawTrendChart(rows);
+}
+
+/* Lightweight canvas line chart — one dependency-free trend line.
+   Parity: solve-rate (solved/min).  MM: avg score 0-100. */
+function drawTrendChart(rows) {
+  const cv = $("histChart");
+  const ctx = cv.getContext("2d");
+  // handle retina crispness
+  const cssW = cv.clientWidth || 440, cssH = 160;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cssW * dpr; cv.height = cssH * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const isParity = histTab === "parity";
+  $("chartTitle").textContent = isParity
+    ? "Solve rate (solved / min) — last " + rows.length + " sessions"
+    : "Avg score (0–100) — last " + rows.length + " sessions";
+
+  if (rows.length < 2) {
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "12px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("Need at least 2 sessions to plot a trend.", cssW / 2, cssH / 2);
+    return;
+  }
+
+  const vals = rows.map(h => isParity ? h.rate : h.avgScore);
+  const padL = 34, padR = 10, padT = 12, padB = 20;
+  const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
+
+  let lo = Math.min.apply(null, vals);
+  let hi = Math.max.apply(null, vals);
+  if (isParity) { lo = Math.min(lo, 0); }
+  else { lo = Math.min(lo, 0); hi = Math.max(hi, 100); }
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const pad = (hi - lo) * 0.1;
+  lo -= pad; hi += pad;
+
+  const x = i => padL + (plotW * i) / (vals.length - 1);
+  const y = v => padT + plotH * (1 - (v - lo) / (hi - lo));
+
+  // axes / gridlines
+  ctx.strokeStyle = "#30363d";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#8b949e";
+  ctx.font = "10px monospace";
+  ctx.textAlign = "right";
+  for (let g = 0; g <= 2; g++) {
+    const v = lo + (hi - lo) * g / 2;
+    const yy = y(v);
+    ctx.beginPath();
+    ctx.moveTo(padL, yy); ctx.lineTo(cssW - padR, yy);
+    ctx.stroke();
+    ctx.fillText((Math.round(v * 10) / 10).toString(), padL - 5, yy + 3);
+  }
+
+  // trend line
+  ctx.strokeStyle = "#58a6ff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  vals.forEach((v, i) => {
+    const px = x(i), py = y(v);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  // points
+  ctx.fillStyle = "#58a6ff";
+  vals.forEach((v, i) => {
+    ctx.beginPath();
+    ctx.arc(x(i), y(v), 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // simple linear-fit guide line (least squares) — shows the real trend
+  const n = vals.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  vals.forEach((v, i) => { sx += i; sy += v; sxx += i * i; sxy += i * v; });
+  const denom = n * sxx - sx * sx;
+  if (Math.abs(denom) > 1e-9) {
+    const slope = (n * sxy - sx * sy) / denom;
+    const intl = (sy - slope * sx) / n;
+    ctx.strokeStyle = "rgba(210,153,34,0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x(0), y(intl));
+    ctx.lineTo(x(n - 1), y(intl + slope * (n - 1)));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+/* ---- export / clear ---- */
+function exportHistory() {
+  const blob = new Blob([JSON.stringify(history, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "trader-drill-history.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function clearHistory() {
+  if (!confirm("Delete all stored sessions? This cannot be undone.")) return;
+  history = [];
+  saveHistory();
+  updateHistCount();
+}
+function updateHistCount() {
+  $("histCount").textContent = history.length + " session" + (history.length === 1 ? "" : "s") + " stored";
+}
+
+/* ============================================================
+   SETTINGS UI
+   ============================================================ */
+function paintSeg(segId, key) {
+  $(segId).querySelectorAll("button").forEach(b => {
+    b.classList.toggle("on", b.dataset.v === String(cfg[key]));
+  });
+}
+function wireSeg(segId, key, after) {
+  $(segId).querySelectorAll("button").forEach(b => {
+    b.addEventListener("click", () => {
+      cfg[key] = b.dataset.v;
+      paintSeg(segId, key); saveCfg();
+      if (after) after();
+    });
+  });
+}
+function paintMode() {
+  $("modeSwitch").querySelectorAll("button").forEach(b => {
+    b.classList.toggle("on", b.dataset.v === cfg.mode);
+  });
+}
+$("modeSwitch").querySelectorAll("button").forEach(b => {
+  b.addEventListener("click", () => {
+    cfg.mode = b.dataset.v; paintMode(); saveCfg(); refreshStartSub();
+  });
+});
+function syncRoundSecsRow() {
+  $("rowRoundSecs").style.display = cfg.mmTimer === "round" ? "" : "none";
+}
+function openSettings() {
+  running = false;
+  cancelAnimationFrame(tickHandle);
+  $("setDuration").value = cfg.duration;
+  $("setRoundSecs").value = cfg.roundSecs;
+  paintSeg("segStrike", "strike");
+  paintSeg("segUnknown", "unknown");
+  paintSeg("segDiscount", "discount");
+  paintSeg("segInstr", "instrument");
+  paintSeg("segWidth", "width");
+  paintSeg("segMMTimer", "mmTimer");
+  paintSeg("segPickoff", "pickoff");
+  syncRoundSecsRow();
+  updateHistCount();
+  ["app","startScreen","endScreen","historyScreen"].forEach(s => $(s).classList.add("hidden"));
+  $("settingsScreen").classList.remove("hidden");
+}
+function refreshStartSub() {
+  if (cfg.mode === "parity") {
+    const u = cfg.unknown === "random" ? "random leg" : KEY_NAME[cfg.unknown];
+    $("startSub").textContent = cfg.duration + "s · solve " + u +
+      (cfg.discount === "on" ? " · discounted" : " · zero-rate");
+  } else {
+    const t = cfg.mmTimer === "round" ? (cfg.roundSecs + "s/quote") : (cfg.duration + "s session");
+    $("startSub").textContent = t + " · " + cfg.instrument + " · " +
+      cfg.width + " spread" + (cfg.pickoff === "on" ? " · pick-off on" : "");
+  }
+}
+
+/* ---- wiring ---- */
+wireSeg("segStrike", "strike");
+wireSeg("segUnknown", "unknown", refreshStartSub);
+wireSeg("segDiscount", "discount", refreshStartSub);
+wireSeg("segInstr", "instrument", refreshStartSub);
+wireSeg("segWidth", "width", refreshStartSub);
+wireSeg("segMMTimer", "mmTimer", () => { syncRoundSecsRow(); refreshStartSub(); });
+wireSeg("segPickoff", "pickoff", refreshStartSub);
+
+$("setDuration").addEventListener("change", e => {
+  let v = parseInt(e.target.value, 10);
+  if (isNaN(v)) v = DEFAULTS.duration;
+  cfg.duration = clamp(v, 30, 600);
+  e.target.value = cfg.duration; saveCfg(); refreshStartSub();
+});
+$("setRoundSecs").addEventListener("change", e => {
+  let v = parseInt(e.target.value, 10);
+  if (isNaN(v)) v = DEFAULTS.roundSecs;
+  cfg.roundSecs = clamp(v, 3, 30);
+  e.target.value = cfg.roundSecs; saveCfg(); refreshStartSub();
+});
+
+$("startBtn").addEventListener("click", startSession);
+$("againBtn").addEventListener("click", startSession);
+$("startTutorial").addEventListener("click", startTutorial);
+$("startHistory").addEventListener("click", openHistory);
+$("endHistory").addEventListener("click", openHistory);
+$("startSettings").addEventListener("click", openSettings);
+$("endSettings").addEventListener("click", openSettings);
+$("toSettings").addEventListener("click", openSettings);
+$("settingsDone").addEventListener("click", () => {
+  $("settingsScreen").classList.add("hidden");
+  refreshStartSub();
+  $("startScreen").classList.remove("hidden");
+});
+$("exportBtn").addEventListener("click", exportHistory);
+$("clearBtn").addEventListener("click", clearHistory);
+
+$("histTabs").querySelectorAll("button").forEach(b => {
+  b.addEventListener("click", () => { histTab = b.dataset.v; paintHistTabs(); renderHistory(); });
+});
+$("historyDone").addEventListener("click", () => {
+  $("historyScreen").classList.add("hidden");
+  $("startScreen").classList.remove("hidden");
+});
+// redraw chart on rotation/resize while history is open
+window.addEventListener("resize", () => {
+  if (!$("historyScreen").classList.contains("hidden")) {
+    drawTrendChart(history.filter(h => h.mode === histTab));
+  }
+});
+
+/* ---- boot ---- */
+buildKeypad();
+paintMode();
+refreshStartSub();
+// first-ever launch: nudge toward the walkthrough
+if (!cfg.tutorialDone) {
+  $("startSub").textContent = "First time? Tap Walkthrough for a 1-minute guided tour.";
+}
+</script>
+</body>
+</html>
