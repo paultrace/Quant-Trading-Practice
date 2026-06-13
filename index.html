@@ -204,7 +204,8 @@
   <h1 id="startTitle">Trader Drill</h1>
   <div class="modeswitch" id="modeSwitch">
     <button data-v="parity">Parity</button>
-    <button data-v="mm">Market Making</button>
+    <button data-v="mm">MM</button>
+    <button data-v="pnl">P&amp;L</button>
   </div>
   <div class="sub" id="startSub"></div>
   <button class="btn" id="startBtn">Start</button>
@@ -246,14 +247,21 @@
 
     <div class="setgroup-label">Parity mode</div>
     <div class="setrow">
-      <div class="lbl"><div class="t">Unknown</div><div class="d">which leg you solve for</div></div>
-      <div class="seg" id="segUnknown">
-        <button data-v="random">Rnd</button><button data-v="C">Call</button>
-        <button data-v="P">Put</button><button data-v="S">Stock</button>
+      <div class="lbl"><div class="t">Parity model</div><div class="d">straddle + r/c, or simple C&minus;P=S&minus;K</div></div>
+      <div class="seg" id="segParityModel">
+        <button data-v="real">Real</button><button data-v="simple">Simple</button>
       </div>
     </div>
     <div class="setrow">
-      <div class="lbl"><div class="t">Discounting</div><div class="d">C&minus;P = S &minus; K&middot;e^(&minus;rT)</div></div>
+      <div class="lbl"><div class="t">Unknown</div><div class="d">which leg you solve for</div></div>
+      <div class="seg" id="segUnknown">
+        <button data-v="random">Rnd</button><button data-v="C">C</button>
+        <button data-v="P">P</button><button data-v="S">S</button>
+        <button data-v="straddle">Strad</button><button data-v="rc">r/c</button>
+      </div>
+    </div>
+    <div class="setrow" id="rowDiscount">
+      <div class="lbl"><div class="t">Discounting (simple)</div><div class="d">C&minus;P = S &minus; K&middot;e^(&minus;rT)</div></div>
       <div class="seg" id="segDiscount">
         <button data-v="off">Off</button><button data-v="on">On</button>
       </div>
@@ -289,6 +297,26 @@
       </div>
     </div>
 
+    <div class="setgroup-label">P&amp;L mode</div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Quantity</div><div class="d">contracts per position</div></div>
+      <div class="seg" id="segPnlQty">
+        <button data-v="single">1</button>
+        <button data-v="small">2&ndash;10</button>
+        <button data-v="large">10&ndash;100</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <div class="lbl"><div class="t">Contract multiplier</div><div class="d">e.g. 100 for US equity options</div></div>
+      <div class="seg" id="segPnlMult">
+        <button data-v="off">Off</button><button data-v="on">On</button>
+      </div>
+    </div>
+    <div class="setrow" id="rowPnlMultValue">
+      <div class="lbl"><div class="t">Multiplier value</div><div class="d">when multiplier is on</div></div>
+      <input class="numfield" id="setPnlMultValue" type="number" inputmode="numeric" min="1" max="10000">
+    </div>
+
     <div class="setgroup-label">Data</div>
     <div class="setrow">
       <div class="lbl"><div class="t">Score history</div><div class="d" id="histCount">0 sessions stored</div></div>
@@ -306,7 +334,8 @@
   <h1>History</h1>
   <div class="histtabs" id="histTabs">
     <button data-v="parity">Parity</button>
-    <button data-v="mm">Market Making</button>
+    <button data-v="mm">MM</button>
+    <button data-v="pnl">P&amp;L</button>
   </div>
   <div class="chartwrap" id="chartWrap">
     <div class="chart-title" id="chartTitle"></div>
@@ -335,8 +364,17 @@ if ("serviceWorker" in navigator) {
 /* ---- persisted settings ---- */
 const DEFAULTS = {
   mode: "parity", duration: 120, strike: "round",
-  unknown: "random", discount: "off",
+  // parity:
+  parityModel: "real",      // "real" = straddle + r/c (the original);
+                            // "simple" = C-P = S-K (zero-rate)
+  unknown: "random",        // "random" | "C" | "P" | "S" | "straddle" | "rc"
+  discount: "off",          // legacy "simple" mode discount toggle
+  // market making:
   instrument: "parity", width: "tight", mmTimer: "round", roundSecs: 8, pickoff: "on",
+  // P&L:
+  pnlMultiplier: "off",     // "off" (per-contract) | "on" (× M)
+  pnlMultValue: 100,        // multiplier when on
+  pnlQuantity: "single",    // "single" (Q=1) | "small" (Q in 1-10) | "large" (Q in 10-100)
   tutorialDone: false
 };
 let cfg;
@@ -388,78 +426,193 @@ let mmScoreSum = 0, mmPickoffs = 0, mmMissed = 0;
 
 /* ---- tutorial state ---- */
 let tutorial = false;     // is a guided walkthrough in progress
-let tutStep = 0;          // index into TUT_SCRIPT
+// tutPhase is declared with the tutorial functions further down
 
-const KEY_NAME = { C: "Call", P: "Put", S: "Stock", K: "Strike" };
+const KEY_NAME = { C: "Call", P: "Put", S: "Stock", K: "Strike",
+                   straddle: "Straddle", rc: "r/c" };
 const WIDTH_TARGET = { tight: 2, medium: 4 };
 
 /* ============================================================
-   PARITY ENGINE  (shared)
+   PARITY ENGINES  (shared by parity mode and MM-on-parity)
+
+   REAL model (the parity-zetamac original):
+     C + P = straddle
+     C - P = S - K + (r/c)
+   We pick S, K, r/c freely; pick a straddle large enough that
+   both legs stay non-negative; derive C and P from the two
+   linear equations. r/c is a small signed carry term.
+
+   SIMPLE model (legacy zero-rate, optional discount):
+     C - P = S - K * df,  df = e^{-rT} (or 1 when off)
    ============================================================ */
-function buildParityRow(forceZeroRate) {
+function buildParityRowReal() {
+  // small/mid prices like the screenshot's 14-15 area, then scaled
+  const S = randInt(10, 200) + pick([0, 0.25, 0.5, 0.75]);
+  let K;
+  if (cfg.strike === "round") {
+    const base = Math.round(S / 5) * 5;
+    K = Math.max(5, base + pick([-10, -5, 0, 5, 10]));
+  } else {
+    K = Math.max(5, Math.round(S) + randInt(-10, 10));
+  }
+  // r/c: small signed carry term, two decimals, can be negative
+  const rc = (randInt(-50, 50)) / 100;
+  // C - P = S - K + rc
+  const cmp = +(S - K + rc).toFixed(2);
+  // pick a straddle big enough that both legs land >= 0:
+  //   C = (straddle + cmp)/2  >= 0 => straddle >= -cmp
+  //   P = (straddle - cmp)/2  >= 0 => straddle >=  cmp
+  const floorStraddle = Math.abs(cmp);
+  // straddle in roughly the range you'd see for ATM-ish names:
+  // floor plus a "time value" cushion of 1-12
+  const straddle = +(floorStraddle + (randInt(100, 1200) / 100)).toFixed(2);
+  const C = +((straddle + cmp) / 2).toFixed(2);
+  const P = +((straddle - cmp) / 2).toFixed(2);
+  return { kind: "real", S, K, rc, straddle, C, P };
+}
+
+function buildParityRowSimple(forceZeroRate) {
   let df = 1;
-  if (!forceZeroRate && cfg.mode === "parity" && cfg.discount === "on") {
+  if (!forceZeroRate && cfg.discount === "on") {
     const r = randInt(1, 5) / 100;
     const T = pick([0.25, 0.5, 0.75, 1]);
     df = Math.round(Math.exp(-r * T) * 1000) / 1000;
   }
-  const S = randInt(50, 200);
+  // Spot: integer + fractional tick so legs land on cents, not whole dollars
+  const S = randInt(50, 200) + pick([0, 0.25, 0.5, 0.75]);
   let K;
   if (cfg.strike === "round") {
+    // "round" still means strikes step on the 5s — that's how real strike
+    // ladders work — but offset by a fractional tick to force cent arithmetic
     const base = Math.round(S / 5) * 5;
     K = Math.max(20, base + pick([-15, -10, -5, 0, 5, 10, 15]));
+    K = +(K + pick([0, 0.25, 0.5, 0.75])).toFixed(2);
   } else {
-    K = Math.max(20, S + randInt(-18, 18));
+    K = Math.max(20, Math.round(S) + randInt(-18, 18));
+    K = +(K + pick([0, 0.25, 0.5, 0.75])).toFixed(2);
   }
   const spread = S - K * df;
+  // floor cushion still keeps put non-negative; +pick adds cent-level texture
   const floorP = Math.max(0, Math.ceil(-spread));
-  const P = floorP + randInt(1, 25);
+  const P = +(floorP + randInt(1, 25) + pick([0, 0.25, 0.5, 0.75])).toFixed(2);
   const C = +(P + spread).toFixed(2);
-  return { S, K, C, P, df };
+  return { kind: "simple", S: +S.toFixed(2), K, C, P, df };
+}
+
+// Unified entry; MM mode always uses zero-rate simple.
+function buildParityRow(forceSimpleZeroRate) {
+  if (forceSimpleZeroRate) return buildParityRowSimple(true);
+  return cfg.parityModel === "real" ? buildParityRowReal() : buildParityRowSimple(false);
 }
 
 /* ============================================================
    PARITY MODE
    ============================================================ */
+// Valid target legs depending on the row model
+const REAL_LEGS = ["C", "P", "S", "straddle", "rc"];
+const SIMPLE_LEGS = ["C", "P", "S"];
+const LEG_LABEL = { C: "Call", P: "Put", S: "Stock", K: "Strike",
+                    straddle: "Straddle", rc: "r/c" };
+const LEG_SHORT = { C: "C", P: "P", S: "S", K: "K",
+                    straddle: "Straddle", rc: "r/c" };
+
 function buildParityRound() {
   const row = buildParityRow();
+  const legs = row.kind === "real" ? REAL_LEGS : SIMPLE_LEGS;
   let target = cfg.unknown;
-  if (target === "random") target = pick(["C", "P", "S"]);
+  if (target === "random" || legs.indexOf(target) < 0) target = pick(legs);
   return Object.assign(row, { target });
 }
 
+// Renders the row of tokens. For "real" rows the layout matches the
+// original trainer screenshot: each token on its own line as a leg.
 function renderParityRow(r, targetKey) {
-  $("promptLabel").textContent = "Solve for the " + KEY_NAME[targetKey].toLowerCase();
-  const legs = [
-    { k: "C", label: "Call",   val: r.C },
-    { k: "P", label: "Put",    val: r.P },
-    { k: "S", label: "Stock",  val: r.S },
-    { k: "K", label: "Strike", val: r.K }
-  ];
+  $("promptLabel").textContent = "Solve for the " +
+    (LEG_LABEL[targetKey] || "leg").toLowerCase();
+
+  let legs;
+  if (r.kind === "real") {
+    legs = [
+      { k: "straddle", label: "Straddle", val: r.straddle },
+      { k: "rc",       label: "r/c",      val: r.rc },
+      { k: "S",        label: "S",        val: r.S },
+      { k: "K",        label: "K",        val: r.K }
+    ];
+    // when the user is solving for C or P, also show the OTHER one
+    // (the original trainer never reveals both, so don't either);
+    // when solving for S or rc, show the call AND put.
+    if (targetKey === "S" || targetKey === "rc") {
+      legs.unshift({ k: "P", label: "Put",  val: r.P });
+      legs.unshift({ k: "C", label: "Call", val: r.C });
+      legs = legs.filter(l => l.k !== "straddle"); // straddle redundant if C,P shown
+    }
+    if (targetKey === "straddle") {
+      // need both legs to compute straddle
+      legs.unshift({ k: "P", label: "Put",  val: r.P });
+      legs.unshift({ k: "C", label: "Call", val: r.C });
+      legs = legs.filter(l => l.k !== "straddle");
+    }
+  } else {
+    legs = [
+      { k: "C", label: "Call",   val: r.C },
+      { k: "P", label: "Put",    val: r.P },
+      { k: "S", label: "Stock",  val: r.S },
+      { k: "K", label: "Strike", val: r.K }
+    ];
+  }
+
   const eq = $("equation");
   eq.innerHTML = "";
-  legs.forEach((leg, i) => {
-    const isT = leg.k === targetKey;
-    const t = document.createElement("div");
-    t.className = "tok" + (isT ? " target" : "");
-    t.innerHTML = '<span class="v">' + (isT ? "?" : fmt(leg.val)) +
-                  '</span><span class="k">' + leg.label + '</span>';
-    eq.appendChild(t);
-    if (i < legs.length - 1) {
+  // Real rows render vertically (like the screenshot), simple rows
+  // render in a row of tokens separated by dots.
+  if (r.kind === "real") {
+    eq.style.flexDirection = "column";
+    eq.style.gap = "6px";
+    legs.forEach(leg => {
+      const isT = leg.k === targetKey;
+      const t = document.createElement("div");
+      t.style.fontSize = "20px";
+      t.style.fontWeight = "600";
+      t.style.color = isT ? "var(--accent)" : "var(--text)";
+      const valTxt = isT ? "?" : fmtVal(leg.k, leg.val);
+      t.textContent = leg.label + " = " + valTxt;
+      eq.appendChild(t);
+    });
+  } else {
+    eq.style.flexDirection = "row";
+    eq.style.gap = "8px 10px";
+    legs.forEach((leg, i) => {
+      const isT = leg.k === targetKey;
+      const t = document.createElement("div");
+      t.className = "tok" + (isT ? " target" : "");
+      t.innerHTML = '<span class="v">' + (isT ? "?" : fmtVal(leg.k, leg.val)) +
+                    '</span><span class="k">' + leg.label + '</span>';
+      eq.appendChild(t);
+      if (i < legs.length - 1) {
+        const op = document.createElement("span");
+        op.className = "op"; op.textContent = "·";
+        eq.appendChild(op);
+      }
+    });
+    if (r.df !== undefined && r.df !== 1) {
       const op = document.createElement("span");
-      op.className = "op"; op.textContent = "·";
+      op.className = "op"; op.textContent = "DF";
       eq.appendChild(op);
+      const t = document.createElement("div");
+      t.className = "tok";
+      t.innerHTML = '<span class="v">' + r.df + '</span><span class="k">e^(-rT)</span>';
+      eq.appendChild(t);
     }
-  });
-  if (r.df !== 1) {
-    const op = document.createElement("span");
-    op.className = "op"; op.textContent = "DF";
-    eq.appendChild(op);
-    const t = document.createElement("div");
-    t.className = "tok";
-    t.innerHTML = '<span class="v">' + r.df + '</span><span class="k">e^(-rT)</span>';
-    eq.appendChild(t);
   }
+}
+
+// r/c can be small/negative — preserve sign + 2dp; otherwise standard fmt.
+function fmtVal(key, v) {
+  if (key === "rc") {
+    const s = (Math.round(v * 100) / 100).toFixed(2);
+    return v >= 0 ? s : s; // toFixed already keeps the minus
+  }
+  return fmt(v);
 }
 
 function renderParity() {
@@ -475,7 +628,10 @@ function checkParity() {
   attempts++;
   const guess = parseFloat(entry);
   const correct = Math.round(round[round.target] * 100) / 100;
-  const ok = Math.abs(guess - correct) < 0.011;
+  // r/c values are small (~±0.5); use a slightly larger absolute tolerance
+  // so the user can ignore a trailing-zero edge case. Everything else is ±0.011.
+  const tol = round.target === "rc" ? 0.005 : 0.011;
+  const ok = Math.abs(guess - correct) < tol;
   const box = $("answer");
   if (ok) {
     solved++; streak++; bestStreak = Math.max(bestStreak, streak);
@@ -484,7 +640,7 @@ function checkParity() {
   } else {
     streak = 0;
     box.className = "answer flash-bad";
-    box.textContent = correct;
+    box.textContent = fmtVal(round.target, correct);
     if (navigator.vibrate) navigator.vibrate([0, 40, 30, 40]);
   }
   refreshScore();
@@ -609,10 +765,128 @@ function mmTimeout() {
 }
 
 /* ============================================================
+   POSITION P&L MODE — single-leg payoff at expiry.
+
+   Position:   side (long/short) × instrument (call/put) × qty
+   Per-contract P&L at expiry:
+       long  call:  max(S_T - K, 0) - premium
+       long  put:   max(K - S_T, 0) - premium
+       short call:  premium - max(S_T - K, 0)
+       short put:   premium - max(K - S_T, 0)
+
+   Total = qty × multiplier × per-contract P&L.
+
+   The drill deliberately mixes ITM and OTM expiries and all four
+   side×instrument combinations so you can't pattern-match.
+   ============================================================ */
+function buildPnlRound() {
+  const side = pick(["long", "short"]);
+  const instr = pick(["call", "put"]);
+  // Strike around 100, premium plausible for a near-the-money option
+  const K = randInt(80, 130);
+  const premium = randInt(150, 800) / 100;              // 1.50 - 8.00
+  // Terminal stock: deliberately mix ITM/OTM/at-money outcomes.
+  // For calls we want both S_T > K and S_T < K; same for puts (flipped).
+  // Bias roughly 60% interesting (clearly ITM or OTM by a margin), 40% near K.
+  let S_T;
+  const roll = Math.random();
+  if (roll < 0.3) S_T = K + randInt(3, 18);             // call ITM / put OTM
+  else if (roll < 0.6) S_T = K - randInt(3, 18);        // call OTM / put ITM
+  else S_T = K + randInt(-4, 4);                        // near the money
+
+  const intrinsic = instr === "call"
+    ? Math.max(S_T - K, 0)
+    : Math.max(K - S_T, 0);
+  const perContract = side === "long"
+    ? +(intrinsic - premium).toFixed(2)
+    : +(premium - intrinsic).toFixed(2);
+
+  // Quantity
+  let qty;
+  if (cfg.pnlQuantity === "single") qty = 1;
+  else if (cfg.pnlQuantity === "small") qty = randInt(2, 10);
+  else qty = randInt(10, 100);
+
+  const mult = cfg.pnlMultiplier === "on" ? cfg.pnlMultValue : 1;
+  const totalPnL = +(qty * mult * perContract).toFixed(2);
+
+  return { kind: "pnl", side, instr, K, premium, S_T,
+           qty, mult, intrinsic, perContract, totalPnL };
+}
+
+function renderPnl() {
+  const r = round;
+  const sideTxt  = r.side === "long" ? "Long" : "Short";
+  const instrTxt = r.instr === "call" ? "Call" : "Put";
+
+  $("promptLabel").textContent = "P&L at expiry";
+
+  // Vertical layout, like real parity rows
+  const eq = $("equation");
+  eq.innerHTML = "";
+  eq.style.flexDirection = "column";
+  eq.style.gap = "6px";
+
+  // Top line: the position description, prominent
+  const posLine = document.createElement("div");
+  posLine.style.fontSize = "22px";
+  posLine.style.fontWeight = "700";
+  posLine.style.color = "var(--accent)";
+  posLine.style.marginBottom = "4px";
+  const qtyTxt = r.qty === 1 ? "" : (r.qty + " × ");
+  posLine.textContent = qtyTxt + sideTxt + " " + instrTxt;
+  eq.appendChild(posLine);
+
+  const rows = [
+    ["Strike",         r.K.toString()],
+    ["Premium",        fmt(r.premium)],
+    ["Terminal S",     fmt(r.S_T)]
+  ];
+  if (r.mult !== 1) rows.push(["Multiplier", r.mult.toString()]);
+  rows.forEach(([k, v]) => {
+    const row = document.createElement("div");
+    row.style.fontSize = "18px";
+    row.style.fontWeight = "600";
+    row.textContent = k + " = " + v;
+    eq.appendChild(row);
+  });
+
+  entry = "";
+  $("answer").textContent = "\u00A0";
+  $("answer").className = "answer";
+}
+
+function checkPnl() {
+  if (entry === "" || entry === "-" || entry === ".") return;
+  if (tutorial) return checkTutorialPnl();
+  attempts++;
+  const guess = parseFloat(entry);
+  const correct = round.totalPnL;
+  // Larger absolute tolerance only for large-multiplier P&Ls so a $0.50
+  // rounding doesn't penalise; for per-contract, hold the tight tolerance.
+  const tol = round.mult >= 100 ? 0.5 : 0.011;
+  const ok = Math.abs(guess - correct) < tol;
+  const box = $("answer");
+  if (ok) {
+    solved++; streak++; bestStreak = Math.max(bestStreak, streak);
+    box.className = "answer flash-good";
+    if (navigator.vibrate) navigator.vibrate(15);
+  } else {
+    streak = 0;
+    box.className = "answer flash-bad";
+    box.textContent = (correct >= 0 ? "+" : "") + fmt(correct);
+    if (navigator.vibrate) navigator.vibrate([0, 40, 30, 40]);
+  }
+  refreshScore();
+  lockThenNext(ok ? 90 : 800);
+}
+
+/* ============================================================
    ROUND DISPATCH
    ============================================================ */
 function nextRound() {
   if (cfg.mode === "parity") { round = buildParityRound(); renderParity(); }
+  else if (cfg.mode === "pnl") { round = buildPnlRound(); renderPnl(); }
   else { round = buildMMRound(); renderMM(); }
 }
 
@@ -629,6 +903,7 @@ function lockThenNext(delayMs) {
 function submit() {
   if (!running) return;
   if (cfg.mode === "parity") checkParity();
+  else if (cfg.mode === "pnl") checkPnl();
   else mmEnter();
 }
 
@@ -672,13 +947,14 @@ function backspace() {
   refreshEntry();
 }
 function refreshEntry() {
-  if (cfg.mode === "parity") {
+  // parity and P&L both use the single answer box; MM uses dual bid/ask
+  if (cfg.mode === "mm") {
+    const el = mmStage === "bid" ? $("bidVal") : $("askVal");
+    el.textContent = entry === "" ? "\u00A0" : entry;
+  } else {
     const a = $("answer");
     a.className = "answer";
     a.textContent = entry === "" ? "\u00A0" : entry;
-  } else {
-    const el = mmStage === "bid" ? $("bidVal") : $("askVal");
-    el.textContent = entry === "" ? "\u00A0" : entry;
   }
 }
 document.addEventListener("keydown", e => {
@@ -708,11 +984,12 @@ function tick() {
   tickHandle = requestAnimationFrame(tick);
 }
 function refreshScore() {
-  if (cfg.mode === "parity") {
-    $("scoreLine").innerHTML = "streak <b>" + streak + "</b> &nbsp;·&nbsp; <b>" + solved + "</b> solved";
-  } else {
+  if (cfg.mode === "mm") {
     const avg = attempts ? Math.round(mmScoreSum / attempts) : 0;
     $("scoreLine").innerHTML = "avg <b>" + avg + "</b> &nbsp;·&nbsp; streak <b>" + streak + "</b>";
+  } else {
+    // parity and P&L share solve-count semantics
+    $("scoreLine").innerHTML = "streak <b>" + streak + "</b> &nbsp;·&nbsp; <b>" + solved + "</b> solved";
   }
 }
 
@@ -752,6 +1029,17 @@ function endSession() {
     $("endRate").textContent = rate + " solved / min";
     recordSession({ mode: "parity", solved, attempts, accuracy: acc,
                     bestStreak, rate, duration: cfg.duration });
+  } else if (cfg.mode === "pnl") {
+    const acc = attempts ? Math.round(100 * solved / attempts) : 0;
+    const rate = +(solved / (cfg.duration / 60)).toFixed(1);
+    $("finalScore").textContent = solved;
+    stats.innerHTML = statBlock(solved, "solved") + statBlock(acc + "%", "accuracy") +
+                      statBlock(bestStreak, "best streak");
+    $("endRate").textContent = rate + " solved / min";
+    recordSession({ mode: "pnl", solved, attempts, accuracy: acc,
+                    bestStreak, rate, duration: cfg.duration,
+                    multiplier: cfg.pnlMultiplier === "on" ? cfg.pnlMultValue : 1,
+                    quantity: cfg.pnlQuantity });
   } else {
     const avg = attempts ? Math.round(mmScoreSum / attempts) : 0;
     $("finalScore").textContent = avg;
@@ -772,113 +1060,135 @@ function statBlock(n, l) {
 
 /* ============================================================
    TUTORIAL  —  guided once-only walkthrough.
-   Parity step kept brief (one solve, sign-flip hint); the MM
-   step does the real teaching: why a quote scores what it does.
+   Teaches the *real* parity model (straddle + r/c), then one MM
+   quote on an abstract fair value to explain the scoring.
+
+   Bug fixes vs previous tutorial:
+     * coach "Next" button is rebuilt as a fresh element each call
+       (avoids stacked listeners that could trigger the wrong step)
+     * tutorial state has its own substep counter (`tutPhase`) and
+       does not rely on the running/locked race window between rounds
+     * input dead-end after a wrong answer fully resets entry + box
    ============================================================ */
-const TUT_SCRIPT = [
-  { phase: "parity-intro",
-    text: '<div class="step">Walkthrough 1 / 4</div>' +
-          'Parity mode. Zero-rate identity: <b>C &minus; P = S &minus; K</b>. ' +
-          'Three legs are shown, one is blank. Here you solve for the <b>call</b>. ' +
-          'Rearrange: <b>C = S &minus; K + P</b>. ' +
-          'Compute <b>S &minus; K</b> first, then add the put. Type it and hit return.' },
-  { phase: "parity-done",
-    text: '<div class="step">Walkthrough 2 / 4</div>' +
-          'That is the whole parity loop. The drill randomises which leg is hidden — ' +
-          'solving for the <b>put</b> flips the signs (<b>P = K &minus; S + C</b>), ' +
-          'and that sign-flip under time pressure is what it trains. Tap Next.' },
-  { phase: "mm-intro",
-    text: '<div class="step">Walkthrough 3 / 4</div>' +
-          'Market making. You are shown a fair value and must quote a two-sided ' +
-          'market: a <b>bid</b> (where you buy) below it and an <b>ask</b> (where you sell) above. ' +
-          'Fair here is <b>100</b>. Enter a bid — try <b>99</b> — and hit return.' },
-  { phase: "mm-ask",
-    text: '<div class="step">Walkthrough 3 / 4</div>' +
-          'Now the ask. It must sit <b>above</b> fair, or you would be selling too cheap — ' +
-          'an instant zero (a "pick-off"). Keep it tight: try <b>101</b>, hit return.' },
-  { phase: "mm-done",
-    text: '<div class="step">Walkthrough 4 / 4</div>' +
-          'Each quote scores 0&ndash;100: half on <b>width</b> (tighter is better, ' +
-          'up to the target), half on <b>centre</b> (your mid vs fair). ' +
-          'A quote on the wrong side of fair scores zero outright. ' +
-          'That tension — tight enough to score, not so tight you get picked off — ' +
-          'is the drill. You are set. Tap Finish.' }
-];
+let tutPhase = "idle";   // "parity" | "parity-done" | "mm-bid" | "mm-ask" | "mm-done"
 
 function showCoach(html) {
   const c = $("coach");
   c.innerHTML = html;
   c.classList.remove("hidden");
 }
-function setKeypadEnabled(on) {
-  $("keypad").querySelectorAll(".key").forEach(k => { k.disabled = !on; });
-}
+function clearCoach() { $("coach").classList.add("hidden"); }
 
-// a coach bubble with a Next/Finish button for non-input steps
+// fresh-button helper: removes any prior listeners by replacing the node
 function coachWithButton(html, label, fn) {
   showCoach(html + '<div style="margin-top:12px;text-align:center">' +
-            '<button class="btn sm" id="coachNext">' + label + '</button></div>');
-  $("coachNext").addEventListener("click", fn);
+    '<button class="btn sm" id="coachNext">' + label + '</button></div>');
+  // newly inserted #coachNext has no listeners; bind once
+  $("coachNext").addEventListener("click", fn, { once: true });
 }
 
 function startTutorial() {
-  tutorial = true; tutStep = 0;
+  tutorial = true;
+  tutPhase = "parity";
   running = false;
   cancelAnimationFrame(tickHandle);
-  // tutorial always runs parity-first regardless of saved mode
+
+  // tutorial uses the REAL model so the lesson matches what they'll drill
   $("answer").classList.remove("hidden");
   $("quote").classList.add("hidden");
   $("verdict").classList.add("hidden");
-  ["startScreen","endScreen","settingsScreen","historyScreen"].forEach(s => $(s).classList.add("hidden"));
+  ["startScreen","endScreen","settingsScreen","historyScreen"].forEach(s =>
+    $(s).classList.add("hidden"));
   $("app").classList.remove("hidden");
   $("timer").textContent = "—";
   $("scoreLine").innerHTML = "<b>walkthrough</b>";
-  // fixed parity round: S=120 K=110 P=8  ->  C = 120-110+8 = 18
-  round = { S: 120, K: 110, C: 18, P: 8, df: 1, target: "C" };
-  renderParity();
+
+  // Fixed parity row (matches the screenshot's numbers exactly so the user
+  // sees the same setup they showed me):
+  //   S=14.22, K=15, r/c=0.09, straddle=3.75 -> C=1.53, P=2.22; solve P.
+  round = { kind: "real", S: 14.22, K: 15, rc: 0.09, straddle: 3.75,
+            C: 1.53, P: 2.22, target: "P" };
+  renderParityRow(round, "P");
+  entry = "";
+  $("answer").textContent = "\u00A0";
+  $("answer").className = "answer";
   running = true;
-  showCoach(TUT_SCRIPT[0].text);
+
+  showCoach(
+    '<div class="step">Walkthrough 1 / 4</div>' +
+    'Real parity model. Two facts are given each round:<br>' +
+    '&nbsp;&nbsp;<b>C + P = straddle</b><br>' +
+    '&nbsp;&nbsp;<b>C &minus; P = S &minus; K + r/c</b><br><br>' +
+    'Here: <b>C &minus; P = 14.22 &minus; 15 + 0.09 = &minus;0.69</b>. ' +
+    'With straddle = 3.75, <b>P = (straddle &minus; (C&minus;P))/2 = (3.75 + 0.69)/2 = 2.22</b>. ' +
+    'Type <b>2.22</b> and hit return.'
+  );
 }
 
 function checkTutorialParity() {
+  if (tutPhase !== "parity") return;
+  if (entry === "" || entry === "-" || entry === ".") return;
   const guess = parseFloat(entry);
-  const correct = 18;
+  const correct = 2.22;
   const box = $("answer");
   if (Math.abs(guess - correct) < 0.011) {
     box.className = "answer flash-good";
     if (navigator.vibrate) navigator.vibrate(15);
+    tutPhase = "parity-done";
     running = false;
     setTimeout(() => {
-      coachWithButton(TUT_SCRIPT[1].text, "Next", tutorialToMM);
-    }, 250);
+      coachWithButton(
+        '<div class="step">Walkthrough 2 / 4</div>' +
+        'That is the whole loop. Compute <b>C &minus; P</b> from <b>S &minus; K + r/c</b>, ' +
+        'then half-sum or half-difference with the straddle to get the leg. ' +
+        'For C: <b>C = (straddle + (C&minus;P)) / 2</b>. ' +
+        'The drill randomises which leg is hidden. Tap Next.',
+        "Next", tutorialToMM);
+    }, 280);
   } else {
     box.className = "answer flash-bad";
-    showCoach(TUT_SCRIPT[0].text +
-      '<div style="margin-top:8px;color:var(--warn)">Not quite — ' +
-      'S &minus; K = 120 &minus; 110 = 10, then + P (8) = <b>18</b>. Try again.</div>');
+    showCoach(
+      '<div class="step">Walkthrough 1 / 4</div>' +
+      'Not quite — work it through: <b>C&minus;P = 14.22 &minus; 15 + 0.09 = &minus;0.69</b>. ' +
+      'Then <b>P = (3.75 &minus; (&minus;0.69))/2 = 4.44/2 = 2.22</b>. Try again.'
+    );
+    // hard reset the input so the user can immediately retype
     entry = "";
-    setTimeout(() => { box.className = "answer"; box.textContent = "\u00A0"; }, 600);
+    setTimeout(() => {
+      box.className = "answer";
+      box.textContent = "\u00A0";
+    }, 600);
   }
 }
 
 function tutorialToMM() {
-  // switch the visible widgets to MM
+  tutPhase = "mm-bid";
   $("answer").classList.add("hidden");
   $("quote").classList.remove("hidden");
   $("verdict").classList.remove("hidden");
-  // fixed abstract instrument, fair = 100
   round = { kind: "abstract", fair: 100 };
   renderMM();
   running = true;
-  showCoach(TUT_SCRIPT[2].text);
+  showCoach(
+    '<div class="step">Walkthrough 3 / 4</div>' +
+    'Market making. Quote a two-sided market: <b>bid</b> (where you buy) below fair, ' +
+    '<b>ask</b> (where you sell) above. Fair here is <b>100</b>. ' +
+    'Enter bid <b>99</b> and hit return.'
+  );
 }
 
 function tutorialAfterBid() {
-  // called once the bid is committed; coach the ask
-  showCoach(TUT_SCRIPT[3].text);
+  if (tutPhase !== "mm-bid") return;
+  tutPhase = "mm-ask";
+  showCoach(
+    '<div class="step">Walkthrough 3 / 4</div>' +
+    'Now the ask — must be above fair, or you sell too cheap (pick-off, instant zero). ' +
+    'Enter ask <b>101</b> and hit return.'
+  );
 }
 
 function checkTutorialQuote() {
+  if (tutPhase !== "mm-ask") return;
   const res = evalQuote(mmBid, mmAsk, 100, "tight", true);
   const good = res.score >= 85 && !res.why;
   $("bidBox").className = "qbox bid " + (good ? "flash-good" : "flash-bad");
@@ -886,34 +1196,105 @@ function checkTutorialQuote() {
   if (good) {
     $("verdict").textContent = "Score " + res.score + " — clean two-sided market.";
     $("verdict").className = "verdict good";
+    tutPhase = "mm-done";
     running = false;
     setTimeout(() => {
-      coachWithButton(TUT_SCRIPT[4].text, "Finish", finishTutorial);
-    }, 250);
+      coachWithButton(
+        '<div class="step">Walkthrough 3 / 4</div>' +
+        'Each quote scores 0&ndash;100: half on <b>width</b> (tighter wins, up to the ' +
+        'target), half on <b>centre</b> (mid vs fair). Through-fair quotes score zero. ' +
+        'Tap Next for the P&amp;L drill.',
+        "Next", tutorialToPnl);
+    }, 280);
   } else {
     let msg;
-    if (res.why === "inverted") msg = "Ask must be above the bid — try bid 99, ask 101.";
+    if (res.why === "inverted") msg = "Ask must be above the bid — try 99 / 101.";
     else if (res.why === "pickoff")
-      msg = "That side is through fair (100) — you'd trade at a loss. Try bid 99, ask 101.";
-    else msg = "A bit wide or off-centre — tighten it. Try bid 99, ask 101.";
-    showCoach(TUT_SCRIPT[3].text +
-      '<div style="margin-top:8px;color:var(--warn)">' + msg + '</div>');
-    // reset the quote boxes to retry
+      msg = "That side is through fair (100). Try 99 / 101.";
+    else msg = "A bit wide or off-centre — tighten it. Try 99 / 101.";
+    showCoach(
+      '<div class="step">Walkthrough 3 / 4</div>' +
+      '<span style="color:var(--warn)">' + msg + '</span><br>' +
+      'Retry: enter bid first, return, then ask, return.'
+    );
     setTimeout(() => {
+      tutPhase = "mm-bid";
       mmStage = "bid"; mmBid = mmAsk = null; entry = "";
       $("bidVal").textContent = "\u00A0"; $("askVal").textContent = "\u00A0";
       $("bidBox").className = "qbox bid active";
       $("askBox").className = "qbox ask";
       $("verdict").textContent = "\u00A0"; $("verdict").className = "verdict";
-      showCoach(TUT_SCRIPT[2].text);
-    }, 800);
+    }, 900);
+  }
+}
+
+/* ---- P&L tutorial step ----
+   Fixed round: Short call, K=100, premium=2.50, S_T=104, qty=1, mult=1.
+   Per-contract P&L = premium - max(S_T - K, 0) = 2.50 - 4 = -1.50.
+   This forces the student through the trap: short premium INCOME
+   minus the bad intrinsic outcome.                                    */
+function tutorialToPnl() {
+  tutPhase = "pnl";
+  $("answer").classList.remove("hidden");
+  $("quote").classList.add("hidden");
+  $("verdict").classList.add("hidden");
+  // Build a fixed P&L round
+  round = {
+    kind: "pnl", side: "short", instr: "call", K: 100, premium: 2.50,
+    S_T: 104, qty: 1, mult: 1,
+    intrinsic: 4, perContract: -1.50, totalPnL: -1.50, target: null
+  };
+  renderPnl();
+  entry = "";
+  $("answer").textContent = "\u00A0";
+  $("answer").className = "answer";
+  running = true;
+  showCoach(
+    '<div class="step">Walkthrough 4 / 4</div>' +
+    'P&amp;L at expiry. You are <b>short a call</b> at strike 100, collected premium 2.50. ' +
+    'Stock closed at 104, so the call is worth max(104&minus;100, 0) = <b>4</b>.<br><br>' +
+    'Short means you <b>receive</b> premium but pay the intrinsic: ' +
+    '<b>P&amp;L = 2.50 &minus; 4 = &minus;1.50</b>.<br>' +
+    'Type <b>-1.5</b> and hit return.'
+  );
+}
+
+function checkTutorialPnl() {
+  if (tutPhase !== "pnl") return;
+  if (entry === "" || entry === "-" || entry === ".") return;
+  const guess = parseFloat(entry);
+  const correct = -1.50;
+  const box = $("answer");
+  if (Math.abs(guess - correct) < 0.011) {
+    box.className = "answer flash-good";
+    if (navigator.vibrate) navigator.vibrate(15);
+    tutPhase = "pnl-done";
+    running = false;
+    setTimeout(() => {
+      coachWithButton(
+        'That sign-flip on short premium is the single most common mistake. ' +
+        'The drill mixes long/short × call/put × ITM/OTM, so you cannot pattern-match. ' +
+        'With the multiplier toggle on, results scale by 100 for equity-option-style payoffs. ' +
+        'You are set. Tap Finish.',
+        "Finish", finishTutorial);
+    }, 280);
+  } else {
+    box.className = "answer flash-bad";
+    showCoach(
+      '<div class="step">Walkthrough 4 / 4</div>' +
+      'Not quite — short call: P&amp;L = premium received &minus; intrinsic paid out. ' +
+      '<b>2.50 &minus; 4 = &minus;1.50</b>. Try again.'
+    );
+    entry = "";
+    setTimeout(() => { box.className = "answer"; box.textContent = "\u00A0"; }, 600);
   }
 }
 
 function finishTutorial() {
   tutorial = false;
+  tutPhase = "idle";
   cfg.tutorialDone = true; saveCfg();
-  $("coach").classList.add("hidden");
+  clearCoach();
   $("app").classList.add("hidden");
   $("startScreen").classList.remove("hidden");
 }
@@ -943,9 +1324,12 @@ function renderHistory() {
   const list = $("histList");
   list.innerHTML = "";
 
+  const modeLabel = histTab === "parity" ? "parity"
+                  : histTab === "pnl"    ? "P&L"
+                  : "market-making";
+
   if (rows.length === 0) {
-    list.innerHTML = '<div class="empty">No ' +
-      (histTab === "parity" ? "parity" : "market-making") +
+    list.innerHTML = '<div class="empty">No ' + modeLabel +
       ' sessions yet. Finish a session and it lands here.</div>';
   }
 
@@ -957,15 +1341,19 @@ function renderHistory() {
                  " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     const row = document.createElement("div");
     row.className = "histrow";
-    if (histTab === "parity") {
-      row.innerHTML =
-        '<span><span class="main">' + h.solved + ' solved</span>' +
-        ' <span class="detail">· ' + h.accuracy + '% · streak ' + h.bestStreak + '</span></span>' +
-        '<span class="when">' + when + '</span>';
-    } else {
+    if (histTab === "mm") {
       row.innerHTML =
         '<span><span class="main">avg ' + h.avgScore + '</span>' +
         ' <span class="detail">· ' + h.quotes + ' quotes · ' + h.pickoffs + ' picked off</span></span>' +
+        '<span class="when">' + when + '</span>';
+    } else {
+      // parity + pnl share the solved/accuracy shape
+      const extra = histTab === "pnl" && h.multiplier > 1
+        ? ' · ×' + h.multiplier : '';
+      row.innerHTML =
+        '<span><span class="main">' + h.solved + ' solved</span>' +
+        ' <span class="detail">· ' + h.accuracy + '% · streak ' + h.bestStreak + extra +
+        '</span></span>' +
         '<span class="when">' + when + '</span>';
     }
     list.appendChild(row);
@@ -975,21 +1363,20 @@ function renderHistory() {
 }
 
 /* Lightweight canvas line chart — one dependency-free trend line.
-   Parity: solve-rate (solved/min).  MM: avg score 0-100. */
+   Parity & P&L: solve-rate (solved/min).  MM: avg score 0-100. */
 function drawTrendChart(rows) {
   const cv = $("histChart");
   const ctx = cv.getContext("2d");
-  // handle retina crispness
   const cssW = cv.clientWidth || 440, cssH = 160;
   const dpr = window.devicePixelRatio || 1;
   cv.width = cssW * dpr; cv.height = cssH * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cssW, cssH);
 
-  const isParity = histTab === "parity";
-  $("chartTitle").textContent = isParity
-    ? "Solve rate (solved / min) — last " + rows.length + " sessions"
-    : "Avg score (0–100) — last " + rows.length + " sessions";
+  const isMM = histTab === "mm";
+  $("chartTitle").textContent = isMM
+    ? "Avg score (0–100) — last " + rows.length + " sessions"
+    : "Solve rate (solved / min) — last " + rows.length + " sessions";
 
   if (rows.length < 2) {
     ctx.fillStyle = "#8b949e";
@@ -999,13 +1386,13 @@ function drawTrendChart(rows) {
     return;
   }
 
-  const vals = rows.map(h => isParity ? h.rate : h.avgScore);
+  const vals = rows.map(h => isMM ? h.avgScore : h.rate);
   const padL = 34, padR = 10, padT = 12, padB = 20;
   const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
 
   let lo = Math.min.apply(null, vals);
   let hi = Math.max.apply(null, vals);
-  if (isParity) { lo = Math.min(lo, 0); }
+  if (!isMM) { lo = Math.min(lo, 0); }
   else { lo = Math.min(lo, 0); hi = Math.max(hi, 100); }
   if (hi - lo < 1e-6) hi = lo + 1;
   const pad = (hi - lo) * 0.1;
@@ -1123,14 +1510,20 @@ function openSettings() {
   cancelAnimationFrame(tickHandle);
   $("setDuration").value = cfg.duration;
   $("setRoundSecs").value = cfg.roundSecs;
+  $("setPnlMultValue").value = cfg.pnlMultValue;
   paintSeg("segStrike", "strike");
+  paintSeg("segParityModel", "parityModel");
   paintSeg("segUnknown", "unknown");
   paintSeg("segDiscount", "discount");
   paintSeg("segInstr", "instrument");
   paintSeg("segWidth", "width");
   paintSeg("segMMTimer", "mmTimer");
   paintSeg("segPickoff", "pickoff");
+  paintSeg("segPnlQty", "pnlQuantity");
+  paintSeg("segPnlMult", "pnlMultiplier");
   syncRoundSecsRow();
+  syncDiscountRow();
+  syncPnlMultRow();
   updateHistCount();
   ["app","startScreen","endScreen","historyScreen"].forEach(s => $(s).classList.add("hidden"));
   $("settingsScreen").classList.remove("hidden");
@@ -1138,8 +1531,14 @@ function openSettings() {
 function refreshStartSub() {
   if (cfg.mode === "parity") {
     const u = cfg.unknown === "random" ? "random leg" : KEY_NAME[cfg.unknown];
-    $("startSub").textContent = cfg.duration + "s · solve " + u +
-      (cfg.discount === "on" ? " · discounted" : " · zero-rate");
+    const modelTxt = cfg.parityModel === "real" ? "real (straddle+r/c)" :
+      ("simple" + (cfg.discount === "on" ? " · discounted" : " · zero-rate"));
+    $("startSub").textContent = cfg.duration + "s · solve " + u + " · " + modelTxt;
+  } else if (cfg.mode === "pnl") {
+    const qtyTxt = cfg.pnlQuantity === "single" ? "qty 1" :
+                   cfg.pnlQuantity === "small" ? "qty 2–10" : "qty 10–100";
+    const multTxt = cfg.pnlMultiplier === "on" ? (" · ×" + cfg.pnlMultValue) : " · per-contract";
+    $("startSub").textContent = cfg.duration + "s · single-leg P&L · " + qtyTxt + multTxt;
   } else {
     const t = cfg.mmTimer === "round" ? (cfg.roundSecs + "s/quote") : (cfg.duration + "s session");
     $("startSub").textContent = t + " · " + cfg.instrument + " · " +
@@ -1149,12 +1548,23 @@ function refreshStartSub() {
 
 /* ---- wiring ---- */
 wireSeg("segStrike", "strike");
+wireSeg("segParityModel", "parityModel", () => { syncDiscountRow(); refreshStartSub(); });
 wireSeg("segUnknown", "unknown", refreshStartSub);
 wireSeg("segDiscount", "discount", refreshStartSub);
 wireSeg("segInstr", "instrument", refreshStartSub);
 wireSeg("segWidth", "width", refreshStartSub);
 wireSeg("segMMTimer", "mmTimer", () => { syncRoundSecsRow(); refreshStartSub(); });
 wireSeg("segPickoff", "pickoff", refreshStartSub);
+wireSeg("segPnlQty", "pnlQuantity", refreshStartSub);
+wireSeg("segPnlMult", "pnlMultiplier", () => { syncPnlMultRow(); refreshStartSub(); });
+
+function syncPnlMultRow() {
+  $("rowPnlMultValue").style.display = cfg.pnlMultiplier === "on" ? "" : "none";
+}
+
+function syncDiscountRow() {
+  $("rowDiscount").style.display = cfg.parityModel === "simple" ? "" : "none";
+}
 
 $("setDuration").addEventListener("change", e => {
   let v = parseInt(e.target.value, 10);
@@ -1167,6 +1577,12 @@ $("setRoundSecs").addEventListener("change", e => {
   if (isNaN(v)) v = DEFAULTS.roundSecs;
   cfg.roundSecs = clamp(v, 3, 30);
   e.target.value = cfg.roundSecs; saveCfg(); refreshStartSub();
+});
+$("setPnlMultValue").addEventListener("change", e => {
+  let v = parseInt(e.target.value, 10);
+  if (isNaN(v)) v = DEFAULTS.pnlMultValue;
+  cfg.pnlMultValue = clamp(v, 1, 10000);
+  e.target.value = cfg.pnlMultValue; saveCfg(); refreshStartSub();
 });
 
 $("startBtn").addEventListener("click", startSession);
