@@ -1,6 +1,6 @@
 /* Trader Drill service worker — cache-first, offline-capable.
    Bump CACHE_VERSION whenever index.html changes so clients refresh. */
-const CACHE_VERSION = "trader-drill-v1";
+const CACHE_VERSION = "trader-drill-v4";
 const ASSETS = [
   "./",
   "./index.html",
